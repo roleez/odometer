@@ -81,7 +81,6 @@ Könnyű használni, minimális bekötést igényel: csak a reed kontaktus kell 
 - **Hardver**:
   - ESP32 TTGO v1.1 panel beépített TFT kijelzővel.
   - Reed kapcsoló.
-  - Külső pull-up ellenállás (10kΩ) a GPIO35-höz.
   - Tápellátás (USB vagy akkumulátor).
 
 - **Szoftver**:
@@ -94,7 +93,7 @@ Könnyű használni, minimális bekötést igényel: csak a reed kontaktus kell 
 1. Kód klónozása:
    ```bash
    git clone https://github.com/roleez/odometer.git
-   cd esp32TTGO_odometer
+   cd odometer
    ```
 
 2. PlatformIO megnyitása, szükséges könyvtárak telepítése.
@@ -103,7 +102,7 @@ Könnyű használni, minimális bekötést igényel: csak a reed kontaktus kell 
 
 4. Hardver bekötése:
    - Reed: GPIO26
-   - Gomb (GPIO35): külső pull-up-pal
+   - Gomb (GPIO35): pull-up-pal
    - Ébresztőgomb (GPIO0): belső pull-up aktív
 
 5. Fordítás és feltöltés az ESP32 TTGO eszközre.
