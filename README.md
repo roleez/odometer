@@ -25,7 +25,7 @@
 
 Ez a projekt egy ESP32 TTGO v1.1 panelre épülő, FreeRTOS-alapú, mikrovezérlős odométer, amely kerékpáros vagy egyéb járműves alkalmazásra készült. Az eszköz egyetlen szenzorbemenettel rendelkezik, amely egy reed kapcsolót figyel a kerék forgásának érzékeléséhez. A mért adatokat egy beépített TFT kijelzőn jeleníti meg.
 
-A hardver 3D nyomtatott házban kapott helyet, így tartós, könnyen rögzíthető, ugyanakkor esztétikus kivitelű. Az eszköz széles tápfeszültség-tartományban működőképes (3.3V – 5V), ami alkalmassá teszi USB-ről vagy Li-ion celláról történő üzemeltetésre is. Két beépített nyomógomb (GPIO0 és GPIO35) szolgál a felhasználói interakciókhoz: kijelzés váltás, nullázás, illetve ébresztés deep sleep állapotból.
+A hardver 3D nyomtatott házban kapott helyet, így tartós, könnyen rögzíthető, ugyanakkor esztétikus kivitelű. Az eszköz széles tápfeszültség-tartományban működőképes (5V, 12...40V), ami alkalmassá teszi USB-ről vagy jármú akkumulátorról történő üzemeltetésre is. Két beépített nyomógomb (GPIO0 és GPIO35) szolgál a felhasználói interakciókhoz: kijelzés váltás, nullázás, illetve ébresztés deep sleep állapotból.
 
 Könnyű használni, minimális bekötést igényel: csak a reed kontaktus kell rákötni a megfelelő GPIO-lábra. A program FreeRTOS alatt fut, így több feladat párhuzamosan és megbízhatóan működik.
 
