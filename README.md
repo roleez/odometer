@@ -29,6 +29,8 @@ A hardver 3D nyomtatott házban kapott helyet, így tartós, könnyen rögzíthe
 
 Könnyű használni, minimális bekötést igényel: csak a reed kontaktus kell rákötni a megfelelő GPIO-lábra. A program FreeRTOS alatt fut, így több feladat párhuzamosan és megbízhatóan működik.
 
+Indulástól 3 másodpercenként vátozik a kijelzett adat, ami GPIO35 nyomógombbal léptethető.
+
 ---
 
 ## Funkciók és Jellemzők
@@ -81,7 +83,7 @@ Könnyű használni, minimális bekötést igényel: csak a reed kontaktus kell 
 - **Hardver**:
   - ESP32 TTGO v1.1 panel beépített TFT kijelzővel.
   - Reed kapcsoló.
-  - Tápellátás (USB vagy akkumulátor).
+  - Tápellátás (USB vagy akkumulátor - belső 12...40DC/5DC konverter).
 
 - **Szoftver**:
   - PlatformIO IDE.
@@ -173,3 +175,5 @@ Könnyű használni, minimális bekötést igényel: csak a reed kontaktus kell 
 ## Összegzés
 
 Az ESP32 TTGO Odométer egy könnyen használható, FreeRTOS alapú eszköz, amely pontos adatokat szolgáltat a kerékpáros vagy egyéb járműves mozgásokról. A kompakt 3D-nyomtatott ház, a minimális bekötés, valamint a szimulációs lehetőség miatt ideális választás hobbistáknak, oktatási projektekhez vagy akár saját fejlesztésű fedélzeti kijelzőhöz.
+
+AI segített tartalom. Roleez 2025
