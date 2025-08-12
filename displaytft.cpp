@@ -12,10 +12,11 @@ extern SensorData_t sharedSensorData;
 extern DisplayState_t sharedDisplayState;
 extern SemaphoreHandle_t xDisplayStateMutex;
 
-LGFX_Sprite sprite(&lcd);
 
 static TimerHandle_t xDisplayTimer = NULL;
 static bool manualDisplayChange = false;
+TFT_eSPI lcd = TFT_eSPI();
+TFT_eSprite sprite = TFT_eSprite(&lcd);
 
 // Timer callback függvény - automatikus kijelző váltáshoz
 void displayTimerCallback(TimerHandle_t xTimer) {
@@ -39,14 +40,14 @@ void displayTimerCallback(TimerHandle_t xTimer) {
   manualDisplayChange = false;
 }
 
-void draw1bitBitmap(LovyanGFX &lcd, int x, int y, const uint8_t *bitmap, int w,
+void draw1bitBitmap(int x, int y, const uint8_t *bitmap, int w,
                     int h, uint16_t fgColor, uint16_t bgColor) {
   int byteWidth = (w + 7) / 8; // hány bájt van egy sorban
   for (int j = 0; j < h; j++) {
     for (int i = 0; i < w; i++) {
       uint8_t byte = bitmap[j * byteWidth + i / 8];
       bool pixelOn = byte & (0x80 >> (i % 8));
-      lcd.drawPixel(x + i, y + j, pixelOn ? fgColor : bgColor);
+      sprite.drawPixel(x + i, y + j, pixelOn ? fgColor : bgColor);
     }
   }
 }
@@ -54,15 +55,16 @@ void draw1bitBitmap(LovyanGFX &lcd, int x, int y, const uint8_t *bitmap, int w,
 void guiTask(void *pvParameters)
 {
   lcd.init();
-  lcd.setRotation(3);
-  lcd.setColorDepth(16);
+  lcd.setRotation(1);
+  //lcd.setColorDepth(16);
 
+  sprite.setColorDepth(16); // Színmélység beállítása
   sprite.createSprite(lcd.width(), lcd.height()); // Sprite méretének beállítása
   sprite.setTextSize(1);                          // Betűméret beállítása
-  sprite.setTextDatum(textdatum_t::middle_center); // Szöveg középre igazítása
+  sprite.setTextDatum(MC_DATUM); // Szöveg középre igazítása
   sprite.setTextColor(TFT_WHITE,
-                      TFT_BLUE); // Szöveg színe: fehér, háttér: fekete
-  sprite.setFont(&FreeMonoBoldOblique12pt7b); // Betűtípus beállítása
+                      TFT_BLUE); // Szöveg színe: fehér, háttér: kék
+  sprite.setFreeFont(&FreeMonoBoldOblique12pt7b); // Betűtípus beállítása
 
   // Timer létrehozása
   xDisplayTimer =
@@ -85,10 +87,8 @@ void guiTask(void *pvParameters)
   }
 
   ESP_LOGI(TAG, "Initial TFT ok.");
-  char buffer[32];
-  ESP_LOGI(TAG, "Waking from deep sleep. Boot count: %d", bootCount);
-  snprintf(buffer, sizeof(buffer), "Wake: %u", bootCount);
-  ESP_LOGI(TAG, "String boot count: %s", buffer);
+  ESP_LOGI(TAG, "Waking from deep sleep. Boot count: %u", bootCount);
+
   char display_buffer[40];
   char me_str[10];
 
@@ -263,9 +263,9 @@ void guiTask(void *pvParameters)
           // Debug log az átlagsebesség számításhoz
           static int debug_avg_counter = 0;
           if (++debug_avg_counter >= 50) { // Minden 50. ciklusban
-            ESP_LOGI(TAG, "Átlag debug: táv=%.4f km, idő_us=%lld, idő_h=%.6f, átlag=%.2f km/h, mozgás: %s", 
+            /*ESP_LOGI(TAG, "Átlag debug: táv=%.4f km, idő_us=%lld, idő_h=%.6f, átlag=%.2f km/h, mozgás: %s", 
                      distanceTraveledKm, totalMovingTimeUs, totalMovingTimeHours, averageSpeedKmh, 
-                     isCurrentlyMoving ? "IGEN" : "NEM");
+                     isCurrentlyMoving ? "IGEN" : "NEM");*/
             debug_avg_counter = 0;
           }
         } else {
@@ -361,30 +361,31 @@ void guiTask(void *pvParameters)
       }
 
       // ikon kirajzolás állapottól függően
+      sprite.fillSprite(TFT_BLUE);
       sprite.fillScreen(TFT_BLUE); // Teljes képernyő törlése
       sprite.drawRect(0, 0, sprite.width(), sprite.height(), TFT_WHITE);
 
       switch (currentDisplayState) {
       case DISPLAY_SPEED:
-        draw1bitBitmap(sprite, 7, 82, iconSpeed, iconSpeedWidth, iconSpeedHeight, TFT_WHITE, TFT_BLUE);
-        ESP_LOGD(TAG, "Drawing speed icon");
+        draw1bitBitmap(7, 82, iconSpeed, iconSpeedWidth, iconSpeedHeight, TFT_WHITE, TFT_BLUE);
+        //ESP_LOGD(TAG, "Drawing speed icon");
         break;
       case DISPLAY_DAILY_DISTANCE:
-        draw1bitBitmap(sprite, 7, 82, iconDistance, iconDistanceWidth, iconDistanceHeight, TFT_WHITE, TFT_BLUE);
-        ESP_LOGD(TAG, "Drawing daily distance icon");
+        draw1bitBitmap(7, 82, iconDistance, iconDistanceWidth, iconDistanceHeight, TFT_WHITE, TFT_BLUE);
+        //ESP_LOGD(TAG, "Drawing daily distance icon");
         break;
       case DISPLAY_TOTAL_DISTANCE:
-        draw1bitBitmap(sprite, 7, 82, iconDistance, iconDistanceWidth, iconDistanceHeight, TFT_WHITE, TFT_BLUE);
-        ESP_LOGD(TAG, "Drawing total distance icon");
+        draw1bitBitmap(7, 82, iconDistance, iconDistanceWidth, iconDistanceHeight, TFT_WHITE, TFT_BLUE);
+        //ESP_LOGD(TAG, "Drawing total distance icon");
         break;
       case DISPLAY_MAX_SPEED:
-        ESP_LOGD(TAG, "Drawing max speed icon");
+        //ESP_LOGD(TAG, "Drawing max speed icon");
         break;
       case DISPLAY_AVERAGE_SPEED:
-        ESP_LOGD(TAG, "Drawing average speed icon");
+        //ESP_LOGD(TAG, "Drawing average speed icon");
         break;
       case DISPLAY_MOVEMENT_TIME:
-        ESP_LOGD(TAG, "Drawing movement time (no icon)");
+        //ESP_LOGD(TAG, "Drawing movement time (no icon)");
         break;
       default:
         break;
@@ -436,9 +437,9 @@ void guiTask(void *pvParameters)
       // Szöveg kirajzolása
       sprite.setTextColor(TFT_WHITE, TFT_BLUE);
       sprite.setTextSize(3);
-      sprite.setFont(&FreeMonoBold12pt7b);
+      sprite.setFreeFont(&FreeMonoBold12pt7b);
       sprite.drawString(display_buffer, sprite.width() / 2, sprite.height() / 2 - 20);
-      sprite.setFont(&FreeSerif9pt7b);
+      sprite.setFreeFont(&FreeSerif9pt7b);
 
       // Ellenőrizzük, hogy "km "-rel kezdődik-e
       int me_str_x_pos;
@@ -450,8 +451,8 @@ void guiTask(void *pvParameters)
 
       sprite.drawString(me_str, me_str_x_pos, sprite.height() / 2 + 40);
       sprite.setTextSize(2);
-      sprite.setFont(nullptr);
-      sprite.setTextColor(TFT_LIGHTGRAY, TFT_BLUE);
+      sprite.setFreeFont(nullptr);
+      sprite.setTextColor(TFT_LIGHTGREY, TFT_BLUE);
       sprite.drawString("HR", 18, 11);
       
       force_redraw = false;

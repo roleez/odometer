@@ -2,6 +2,8 @@
 #include <string.h>
 #include <math.h>
 #include <atomic>
+#include <WiFi.h>           // hozzáadva: WiFi Station
+#include <ArduinoOTA.h>     // hozzáadva: OTA
 
 #include "displaytft.h" // SensorData_t innen jön
 #include "driver/gpio.h"
@@ -15,7 +17,7 @@
 #include "freertos/task.h"
 #include "nvs.h"
 #include "nvs_flash.h"
-#include <LovyanGFX.hpp>
+#include <Arduino.h>
 #include <driver/rtc_io.h>
 #include "config.h" // A konfigurációs beállítások innen jönnek
 //static LGFX lcd;
@@ -47,6 +49,7 @@ extern bool data_changed; // Ez a változó jelzi, hogy az adatok frissültek-e
 // --- NVS Globálisok ---
 #define NVS_NAMESPACE "storage"
 #define NVS_KEY_TOTAL_PULSES "total_pulses"
+#define NVS_KEY_DAILY_PULSES "daily_pulses"
 #define NVS_KEY_MOVING_TIME "moving_time"  // Új: mozgási idő NVS kulcs
 nvs_handle_t g_nvs_handle = 0; // NVS handle (globális, hogy ne kelljen mindenhol nyitni/zárni)
 
@@ -66,15 +69,53 @@ void serial_output_task(void *pvParameters); // Hiányzó prototípus hozzáadá
 volatile int64_t lastDebounceTimeUs = 0;
 const int64_t debounceDelayUs = 10000; // 10 ms
 
+// Új: impulzusesemény jelzésére counting semaphore
+static SemaphoreHandle_t xPulseSemaphore = NULL;
+
+// Új: WiFi-off timer
+static TimerHandle_t wifiOffTimer = NULL;
+
+// visszahívás 10 perc múlva
+void wifiOffTimerCallback(TimerHandle_t xTimer) {
+    ESP_LOGI(TAG, "Disabling WiFi to save power");
+    if (WiFi.isConnected()) {
+        WiFi.disconnect(true);
+        WiFi.mode(WIFI_OFF);
+    }
+}
+
 // --- ISR (Interrupt Service Routine - REED) ---
 void IRAM_ATTR gpio_isr_handler(void* arg) {
-    int64_t currentTimeUs_isr = esp_timer_get_time();
-
-    if ((currentTimeUs_isr - lastDebounceTimeUs) > debounceDelayUs) { // (1) Feltétel ellenőrzése
-        pulseCount.fetch_add(1, std::memory_order_relaxed);          // (2) pulseCount növelése
-        lastPulseTimeUs.store(currentTimeUs_isr, std::memory_order_relaxed); // (3) Utolsó impulzus idejének rögzítése
-        lastDebounceTimeUs = currentTimeUs_isr;                      // (4) lastDebounceTimeUs frissítése
+    int64_t now = esp_timer_get_time();
+    if ((now - lastDebounceTimeUs) > debounceDelayUs) {
+        lastDebounceTimeUs = now;
+        lastPulseTimeUs.store(now, std::memory_order_relaxed);
+        pulseCount.fetch_add(1, std::memory_order_relaxed);
+        BaseType_t hptw = pdFALSE;
+        xSemaphoreGiveFromISR(xPulseSemaphore, &hptw);
+        if (hptw) portYIELD_FROM_ISR();
     }
+}
+
+void inactivity_monitor_task(void *pvParameters) {
+  ESP_LOGI(TAG, "Inactivity monitor task started.");
+  while (1) {
+    // Várjunk egy ésszerű ideig, pl. 30 másodpercig
+    vTaskDelay(pdMS_TO_TICKS(30000));
+
+    int64_t currentTimeUs = esp_timer_get_time();
+    int64_t last_pulse_time = lastPulseTimeUs.load(std::memory_order_relaxed);
+    int64_t inactivity_duration_us = currentTimeUs - last_pulse_time;
+
+    // Ha az utolsó impulzus óta eltelt idő nagyobb, mint a timeout
+    if (inactivity_duration_us > INACTIVITY_TIMEOUT_US) {
+      ESP_LOGI(TAG,
+               "Inactivity detected for over %d minutes. Entering deep sleep.",
+               INACTIVITY_TIMEOUT_S / 60);
+
+      go_to_deep_sleep();
+    }
+  }
 }
 
 // --- NVS Funkciók ---
@@ -239,110 +280,132 @@ void nvs_save_task(void *pvParameters) {
     }
 }
 
-// --- Sebesség/Távolság Számoló és Alvásvezérlő Task ---
-void calculation_and_control_task(void *pvParameters) {
-    ESP_LOGI(TAG, "Calculation and control task started.");
+// --- Sebesség/Távolság Számoló Task (pulse driven) ---
+#define SPEED_TIMEOUT_MS 5000  // 5 mp inaktivitás után 0 km/h
 
-    const int64_t systemOrTaskStartTimeUs = esp_timer_get_time(); // Rendszer/task indulási ideje
-    uint64_t previousTotalPulseCountForCalc = pulseCount.load(std::memory_order_relaxed);
-    int64_t lastCheckTimeUs = systemOrTaskStartTimeUs;
+void calculation_and_control_task(void *pvParameters) {
+    ESP_LOGI(TAG, "Calc task (pulse-driven) started.");
+    const double wheelCircM = M_PI * WHEEL_DIAMETER_M;
+    int64_t prevPulseUs = 0;
+    double curSpeed = 0.0;
+    static double moveAccum = 0.0; // <-- Új: mozgásidő felhalmozó
+
+    uint64_t last_saved_total_pulses =
+        pulseCount.load(std::memory_order_relaxed);
+    uint32_t last_saved_moving_time = sharedSensorData.movingTimeSeconds;
+    int64_t last_nvs_save_time = esp_timer_get_time();
+
+    // --- KEZDETI SZÁMÍTÁS ÉS FELTÖLTÉS ---
+    if (xDataMutex != NULL &&
+        xSemaphoreTake(xDataMutex, portMAX_DELAY) == pdTRUE) {
+      uint64_t initial_pulses = pulseCount.load(std::memory_order_relaxed);
+      sharedSensorData.totalDistanceKm =
+          (double)initial_pulses * (WHEEL_DIAMETER_M * M_PI) / 1000.0;
+
+      // napi távolság init: különbség a start-impulzusoktól
+      {
+        uint64_t dp = (initial_pulses >= dailyTripStartPulseCount)
+                          ? (initial_pulses - dailyTripStartPulseCount)
+                          : 0;
+        sharedSensorData.dailyDistanceKm =
+          (double)dp * (WHEEL_DIAMETER_M * M_PI) / 1000.0;
+      }
+
+      ESP_LOGI(TAG,
+               "Initial calculation complete. Total: %.2f km, Daily: %.2f km",
+               sharedSensorData.totalDistanceKm,
+               sharedSensorData.dailyDistanceKm);
+      xSemaphoreGive(xDataMutex);
+    }
+    // --- VÉGE ---
 
     while (1) {
-        vTaskDelay(pdMS_TO_TICKS(REPORTING_INTERVAL_MS));
+        // Várunk új impulzusra, max 5 mp ig
+        if (xSemaphoreTake(xPulseSemaphore, pdMS_TO_TICKS(SPEED_TIMEOUT_MS)) == pdTRUE) {
+            int64_t now = lastPulseTimeUs.load(std::memory_order_relaxed);
+            if (prevPulseUs != 0) {
+                double dt = (now - prevPulseUs) / 1000000.0;        // s
+                curSpeed = (wheelCircM / dt) * 3.6;                // km/h
+                double incKm = wheelCircM / 1000.0;                // km per pulse
 
-        int64_t currentTimeUs = esp_timer_get_time();
-        uint64_t currentTotalPulses = pulseCount.load(std::memory_order_relaxed);
-        int64_t latestReedPulseTime = lastPulseTimeUs.load(std::memory_order_relaxed);
+                if (xSemaphoreTake(xDataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                    sharedSensorData.instantaneousSpeedKmh = curSpeed;
+                    sharedSensorData.speedKmh = curSpeed;
+                    sharedSensorData.totalDistanceKm += incKm;
 
-        // Napi út számítása
-        uint64_t current_daily_raw_pulses = 0;
-        uint64_t rtc_daily_start = dailyTripStartPulseCount; // Olvassuk ki az RTC változót
-        if (currentTotalPulses >= rtc_daily_start) {
-            current_daily_raw_pulses = currentTotalPulses - rtc_daily_start;
-        }
+                    // napi távolság minden pulzusnál újraszámolva
+                    {
+                      uint64_t total_p = pulseCount.load(std::memory_order_relaxed);
+                      uint64_t dp = (total_p >= dailyTripStartPulseCount)
+                                        ? (total_p - dailyTripStartPulseCount)
+                                        : 0;
+                      sharedSensorData.dailyDistanceKm =
+                        (double)dp * wheelCircM / 1000.0;
+                    }
 
-        // Impulzusok száma az utolsó intervallumban a sebességhez
-        uint64_t pulsesInInterval = currentTotalPulses - previousTotalPulseCountForCalc;
-        double deltaTimeS = (double)(currentTimeUs - lastCheckTimeUs) / 1000000.0;
+                    moveAccum += dt;                        // felhalmozzuk a tört másodperceket
+                    /*uint32_t addSec = (uint32_t)moveAccum;  // csak egész másodpercek
+                    if (addSec > 0) {
+                        sharedSensorData.movingTimeSeconds += addSec;
+                        moveAccum -= addSec;                // maradék vissza
+                    }*/
 
-        // Sebesség számítása
-        double currentSpeedKmh = 0.0;
-        if (pulsesInInterval > 0 && deltaTimeS > 0.01) { // Kerüljük a 0-val osztást vagy túl kicsi dt-t
-            double revolutionsInInterval = (double)pulsesInInterval / PULSES_PER_REVOLUTION;
-            double distanceMetersInInterval = revolutionsInInterval * (M_PI * WHEEL_DIAMETER_M);
-            double speedMps = distanceMetersInInterval / deltaTimeS;
-            currentSpeedKmh = speedMps * 3.6;
-        }
+                    if (moveAccum >= 1.0) {
+                      uint32_t addSec = floor(
+                          moveAccum); // Kerekítés lefelé a biztonság kedvéért
+                      sharedSensorData.movingTimeSeconds += addSec;
+                      moveAccum -= addSec; // maradék vissza
+                    }
 
-        // Megállás detektálása (ha az utolsó impulzus régen volt)
-        if (latestReedPulseTime != 0 && (currentTimeUs - latestReedPulseTime) > 3000000ULL) { // 3 másodperc
-             currentSpeedKmh = 0.0;
-        }
-        if (latestReedPulseTime == 0 && currentTotalPulses == previousTotalPulseCountForCalc) {
-             currentSpeedKmh = 0.0;
-        }
-
-        // JAVÍTOTT mozgási idő számítás - a szimuláció ideje alatt mindig számol
-        if (xSemaphoreTake(xDataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-            // MÓDOSÍTÁS: Ha van aktív impulzus (szimuláció fut), akkor az időt mindig hozzáadjuk
-            // Ellenőrizzük, hogy van-e aktív mozgás (legutóbbi impulzus friss-e)
-            bool hasRecentPulse = (latestReedPulseTime != 0) && 
-                                  ((currentTimeUs - latestReedPulseTime) <= 3000000ULL); // 3 sec-en belül
-            
-            // Ha van friss impulzus VAGY sebesség > 0, akkor számítjuk az időt
-            if (hasRecentPulse || currentSpeedKmh > 0.01) {
-                // PONTOSABB számítás: nem kerekítünk, hanem float-ként adjuk hozzá
-                double deltaTimeSecondsFloat = deltaTimeS;
-                sharedSensorData.movingTimeSeconds += (uint32_t)(deltaTimeSecondsFloat + 0.5); // Kerekítéssel
-                
-                // Debug log minden 10. alkalommal
-                static int movement_debug_counter = 0;
-                if (++movement_debug_counter >= 10) {
-                    ESP_LOGI(TAG, "Mozgás számítás: delta=%.3f sec, speed=%.1f km/h, recentPulse=%s, total=%lu sec", 
-                             deltaTimeSecondsFloat, currentSpeedKmh, hasRecentPulse ? "IGEN" : "NEM", 
-                             sharedSensorData.movingTimeSeconds);
-                    movement_debug_counter = 0;
+                    xSemaphoreGive(xDataMutex);
                 }
+               // ESP_LOGD(TAG, "Pulse dt=%.3f s, speed=%.1f km/h", dt, curSpeed);
             }
-            xSemaphoreGive(xDataMutex);
+            prevPulseUs = now;
         } else {
-            ESP_LOGW(TAG, "Couldn't update moving time due to mutex issue!");
-        }
+            // Timeout: 5 mp alatt nem jött új impulzus → 0 km/h
+            /*if (curSpeed != 0.0) {
+                curSpeed = 0.0;
+                if (xSemaphoreTake(xDataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                    sharedSensorData.instantaneousSpeedKmh = 0.0;
+                    sharedSensorData.speedKmh = 0.0;
+                    xSemaphoreGive(xDataMutex);
+                }
+                ESP_LOGI(TAG, "No pulse for 5s, speed set to 0");*/
 
-        // Távolságok kiszámítása km-ben
-        double currentDailyDistanceKm = ((double)current_daily_raw_pulses / PULSES_PER_REVOLUTION) * (M_PI * WHEEL_DIAMETER_M) / 1000.0;
-        double currentTotalDistanceKm = ((double)currentTotalPulses / PULSES_PER_REVOLUTION) * (M_PI * WHEEL_DIAMETER_M) / 1000.0;
+            // Timeout: nem jött impulzus, megálltunk
+            if (curSpeed != 0.0) {
+              if (xSemaphoreTake(xDataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                // ÚJ: Az utolsó impulzus óta eltelt idő hozzáadása a megállás
+                // előtt
+                int64_t now = esp_timer_get_time();
+                int64_t prevPulseUs =
+                    lastPulseTimeUs.load(std::memory_order_relaxed);
+                if (prevPulseUs != 0) {
+                  double dt_since_last =
+                      (double)(now - prevPulseUs) / 1000000.0;
+                  // Csak a timeout-ig eltelt időt adjuk hozzá, ne a teljeset,
+                  // ha az több
+                  if (dt_since_last > (SPEED_TIMEOUT_MS / 1000.0)) {
+                    dt_since_last = (SPEED_TIMEOUT_MS / 1000.0);
+                  }
+                  moveAccum += dt_since_last;
+                  if (moveAccum >= 1.0) {
+                    uint32_t addSec = floor(moveAccum);
+                    sharedSensorData.movingTimeSeconds += addSec;
+                    moveAccum -= addSec;
+                  }
+                }
 
-        // Adatok frissítése (Mutex védelemmel)
-        if (xSemaphoreTake(xDataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-            sharedSensorData.speedKmh              = currentSpeedKmh;
-            sharedSensorData.instantaneousSpeedKmh = currentSpeedKmh;
-            sharedSensorData.dailyDistanceKm       = currentDailyDistanceKm;
-            sharedSensorData.totalDistanceKm       = currentTotalDistanceKm;
-            xSemaphoreGive(xDataMutex);
-        } else {
-            ESP_LOGW(TAG, "Calculation task couldn't get mutex for shared data!");
-        }
-
-        // Előző értékek frissítése a következő ciklushoz
-        previousTotalPulseCountForCalc = currentTotalPulses;
-        lastCheckTimeUs = currentTimeUs;
-
-        // --- Inaktivitás ellenőrzése és Mélyalvás indítása ---
-        int64_t referenceTimeForInactivity;
-        if (latestReedPulseTime != 0) { // Ha volt már REED impulzus
-            referenceTimeForInactivity = latestReedPulseTime;
-        } else { // Ha még nem volt REED impulzus ebben a működési ciklusban
-            referenceTimeForInactivity = systemOrTaskStartTimeUs;
-        }
-
-        if ((currentTimeUs - referenceTimeForInactivity) > INACTIVITY_TIMEOUT_US) {
-            ESP_LOGI(TAG, "Inactivity timeout reached (Reference: %s). Entering deep sleep.",
-                     (latestReedPulseTime != 0) ? "last REED pulse" : "system start");
-            
-            // A dailyTripStartPulseCount már RTC, nem kell külön menteni alvás előtt
-            go_to_deep_sleep(); // Ez a függvény nem tér vissza
-        }
+                curSpeed = 0.0;
+                sharedSensorData.instantaneousSpeedKmh = 0.0;
+                sharedSensorData.speedKmh = 0.0;
+                //data_changed = true;
+                xSemaphoreGive(xDataMutex);
+                ESP_LOGI(TAG, "Speed timeout. Set speed to 0.");
+              }
+            }
+       }
     }
 }
 
@@ -360,9 +423,9 @@ void go_to_deep_sleep(void) {
     }
 
     // Mozgási idő mentése alvás előtt
-    if (xDataMutex != NULL && xSemaphoreTake(xDataMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+    /*if (xDataMutex != NULL && xSemaphoreTake(xDataMutex, pdMS_TO_TICKS(100)) == pdTRUE)*/ {
         uint32_t currentMovingTime = sharedSensorData.movingTimeSeconds;
-        xSemaphoreGive(xDataMutex);
+      //  xSemaphoreGive(xDataMutex);
         
         esp_err_t moving_err = save_moving_time_to_nvs(currentMovingTime);
         if (moving_err == ESP_OK) {
@@ -468,6 +531,13 @@ void reed_simulation_task(void *pvParameters) {
     pulseCount.fetch_add(1, std::memory_order_relaxed);
     lastPulseTimeUs.store(esp_timer_get_time(), std::memory_order_relaxed);
 
+    // ÚJ: impulzus jelzése a számoló (calculation_and_control) tasknak
+    {
+      BaseType_t xHPTW = pdFALSE;
+      xSemaphoreGiveFromISR(xPulseSemaphore, &xHPTW);
+      if (xHPTW) portYIELD_FROM_ISR();
+    }
+
     // ESP_LOGD(TAG, "Simulated pulse. Count: %llu",
     // pulseCount.load(std::memory_order_relaxed));
   }
@@ -494,14 +564,14 @@ void serial_output_task(void *pvParameters) {
         if (xSemaphoreTake(xDataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
             dataToPrint = sharedSensorData;
             xSemaphoreGive(xDataMutex);
-            ESP_LOGI(TAG, "Speed: %.2f km/h, Daily: %.2f km, Total: %.2f km, Moving: %lu sec | TP: %llu, DSP: %llu, CDP: %llu",
+            /*ESP_LOGI(TAG, "Speed: %.2f km/h, Daily: %.2f km, Total: %.2f km, Moving: %lu sec | TP: %llu, DSP: %llu, CDP: %llu",
                    dataToPrint.speedKmh,
                    dataToPrint.dailyDistanceKm,
                    dataToPrint.totalDistanceKm,
                    (unsigned long)dataToPrint.movingTimeSeconds,
                    current_total_p,
                    local_daily_trip_start_pulses,
-                   current_daily_p);
+                   current_daily_p);*/
         } else {
             ESP_LOGW(TAG, "Serial task couldn't get mutex for printing!");
         }
@@ -635,7 +705,7 @@ void init_gps_uart(void) {
 }
 
 // --- Main (app_main) ---
-extern "C" void app_main(void)
+void setup()
 {
     ESP_LOGI(TAG, "Starting Wheel Sensor Application V3 (Corrected Sleep Logic)");
 
@@ -664,49 +734,41 @@ extern "C" void app_main(void)
     }
 
     // JAVÍTÁS: Kilométeróra beállítása 75 km-re (csak egyszer!)
-    const double targetDistanceKm = 75.0;
+    //const double targetDistanceKm = 220.0;
+#if SET_INITIAL_ODOMETER == 1
     const double wheelCircumferenceM = M_PI * WHEEL_DIAMETER_M;
-    const double targetDistanceM = targetDistanceKm * 1000.0;
+    const double targetDistanceM = INITIAL_TOTAL_KM * 1000.0;
     const double revolutionsNeeded = targetDistanceM / wheelCircumferenceM;
     const uint64_t pulsesNeeded = (uint64_t)(revolutionsNeeded * PULSES_PER_REVOLUTION);
     
     ESP_LOGI(TAG, "Target: %.1f km = %.0f m = %.2f rev = %llu pulses", 
-             targetDistanceKm, targetDistanceM, revolutionsNeeded, pulsesNeeded);
+             targetDistanceM / 1000.0, targetDistanceM, revolutionsNeeded, pulsesNeeded);
+    save_total_pulses_to_nvs(pulsesNeeded);
+    pulseCount.store(pulsesNeeded, std::memory_order_relaxed);
+    double currentKm =
+        ((double)pulsesNeeded / PULSES_PER_REVOLUTION) *
+        wheelCircumferenceM / 1000.0;
+#endif
 
     uint64_t loaded_pulses_from_nvs = 0;
     load_total_pulses_from_nvs(&loaded_pulses_from_nvs);
-    
-    if (loaded_pulses_from_nvs < pulsesNeeded / 2) {
-        ESP_LOGI(TAG, "Setting initial total distance to %.1f km (%llu pulses)", targetDistanceKm, pulsesNeeded);
-        pulseCount.store(pulsesNeeded, std::memory_order_relaxed);
-        esp_err_t err = save_total_pulses_to_nvs(pulsesNeeded);
-        if (err == ESP_OK) {
-            ESP_LOGI(TAG, "Successfully saved initial total distance to NVS");
-        } else {
-            ESP_LOGE(TAG, "Failed to save initial total distance: %s", esp_err_to_name(err));
-        }
-    } else {
-        pulseCount.store(loaded_pulses_from_nvs, std::memory_order_relaxed);
-        double currentKm = ((double)loaded_pulses_from_nvs / PULSES_PER_REVOLUTION) * wheelCircumferenceM / 1000.0;
-        ESP_LOGI(TAG, "Using existing total distance: %.3f km (%llu pulses)", currentKm, loaded_pulses_from_nvs);
-    }
+    // ensure we restore the stored odometer value on every boot
+    pulseCount.store(loaded_pulses_from_nvs, std::memory_order_relaxed);
+    ESP_LOGI(TAG, "Boot start pulseCount set to: %llu (from NVS)", loaded_pulses_from_nvs);
 
-    ESP_LOGI(TAG, "Initial pulseCount set to: %llu", pulseCount.load(std::memory_order_relaxed));
-
-    // Scope probléma megoldása: változót a switch előtt deklaráljuk
     uint32_t savedMovingTime = 0;
-    
     esp_sleep_source_t wakeup_cause = esp_sleep_get_wakeup_cause();
     ESP_LOGW(TAG, "Wakeup cause: %d", wakeup_cause);
+
     switch (wakeup_cause) {
         case ESP_SLEEP_WAKEUP_EXT0:
         case ESP_SLEEP_WAKEUP_EXT1:
         case ESP_SLEEP_WAKEUP_TIMER:
         case ESP_SLEEP_WAKEUP_TOUCHPAD:
         case ESP_SLEEP_WAKEUP_ULP:
-          ESP_LOGI(TAG, "Waking from configured deep sleep source. Daily trip "
+          /*ESP_LOGI(TAG, "Waking from configured deep sleep source. Daily trip "
                     "start count (%llu) preserved.",
-               dailyTripStartPulseCount);
+               dailyTripStartPulseCount);*/
           bootCount++;
           ESP_LOGI(TAG, "Boot count incremented to %d.", bootCount);    
           
@@ -732,20 +794,48 @@ extern "C" void app_main(void)
         case ESP_SLEEP_WAKEUP_COCPU_TRAP_TRIG:
         case ESP_SLEEP_WAKEUP_BT:
         default:
-          bootCount = 0;
-          ESP_LOGI(TAG, "Cold boot or unexpected reset detected. Setting daily "
-                        "trip start pulse count.");
-          dailyTripStartPulseCount = pulseCount.load(std::memory_order_relaxed);
-          lastPulseTimeUs.store(0, std::memory_order_relaxed);
-          
-          // POWER-ON: Mozgási idő nullázása (MOST MÁR VAN MUTEX!)
-          if (xSemaphoreTake(xDataMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-              sharedSensorData.movingTimeSeconds = 0;
-              xSemaphoreGive(xDataMutex);
-              ESP_LOGI(TAG, "Moving time reset to 0 on power-on.");
-              save_moving_time_to_nvs(0);
-          } else {
-              ESP_LOGW(TAG, "Failed to get mutex for moving time reset!");
+            bootCount = 0;
+            ESP_LOGI(TAG, "Cold boot: dailyTripStartPulseCount set to %llu pulses", pulseCount.load(std::memory_order_relaxed));
+            dailyTripStartPulseCount = pulseCount.load(std::memory_order_relaxed);
+            lastPulseTimeUs.store(0, std::memory_order_relaxed);
+            
+            // POWER-ON: Mozgási idő nullázása (MOST MÁR VAN MUTEX!)
+            if (xSemaphoreTake(xDataMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+                sharedSensorData.movingTimeSeconds = 0;
+                xSemaphoreGive(xDataMutex);
+                ESP_LOGI(TAG, "Moving time reset to 0 on power-on.");
+                save_moving_time_to_nvs(0);
+            } else {
+                ESP_LOGW(TAG, "Failed to get mutex for moving time reset!");
+            }
+
+          // WiFi és OTA csak cold-bootkor
+          WiFi.mode(WIFI_STA);
+          WiFi.begin(WIFI_SSID, WIFI_PASS);
+          ESP_LOGI(TAG, "Connecting WiFi SSID: %s", WIFI_SSID);
+          uint16_t wifiRetryCount = 0;
+          while (WiFi.status() != WL_CONNECTED && wifiRetryCount < WIFI_CONNECT_MAX_RETRIES) {
+              ESP_LOGI(TAG, "WiFi connecting... Attempt %d/%d", wifiRetryCount + 1, WIFI_CONNECT_MAX_RETRIES);
+              vTaskDelay(pdMS_TO_TICKS(1000));
+              wifiRetryCount++;
+          }
+
+          ESP_LOGI(TAG, "WiFi connected, IP: %s", WiFi.localIP().toString().c_str());
+          if (WiFi.status() == WL_CONNECTED) { 
+            ArduinoOTA.begin();
+            ESP_LOGI(TAG, "OTA Ready");
+          }
+
+          // egyszer futó timer 10 perc múlva WiFi lekapcsoláshoz
+          wifiOffTimer = xTimerCreate(
+              "WiFiOffTimer",
+              pdMS_TO_TICKS(10 * 60 * 1000),
+              pdFALSE,
+              NULL,
+              wifiOffTimerCallback
+          );
+          if (wifiOffTimer) {
+              xTimerStart(wifiOffTimer, 0);
           }
           break;
     }
@@ -799,12 +889,19 @@ extern "C" void app_main(void)
 #else
   ESP_LOGW(TAG, "REED Simulation is ACTIVE. Real REED ISR is NOT attached.");
 #endif
+    // Impulzus semafor létrehozása
+    xPulseSemaphore = xSemaphoreCreateCounting(UINT32_MAX, 0);
+    if (!xPulseSemaphore) {
+        ESP_LOGE(TAG, "Failed to create pulse semaphore!");
+        return;
+    }
+
     BaseType_t task_created;
     task_created = xTaskCreate(calculation_and_control_task, "calc_ctrl_task", 4096, NULL, 5, NULL);
     if (task_created != pdPASS) { ESP_LOGE(TAG, "Failed to create calculation_and_control_task! Halting."); /* Cleanup... */ return; }
 
-    task_created = xTaskCreate(serial_output_task, "serial_task", 4096, NULL, 4, NULL);
-    if (task_created != pdPASS) { ESP_LOGE(TAG, "Failed to create serial_output_task! Halting."); /* Cleanup... */ return; }
+    /*task_created = xTaskCreate(serial_output_task, "serial_task", 4096, NULL, 4, NULL);
+    if (task_created != pdPASS) { ESP_LOGE(TAG, "Failed to create serial_output_task! Halting."); /* Cleanup... * return; } */
 
     task_created = xTaskCreate(nvs_save_task, "nvs_save_task", 4096, NULL, 3, NULL);
     if (task_created != pdPASS) { ESP_LOGE(TAG, "Failed to create nvs_save_task! Halting."); /* Cleanup... */ return; }
@@ -814,6 +911,8 @@ extern "C" void app_main(void)
 
     task_created = xTaskCreate(guiTask, "TFT task", 4096, NULL, 6, NULL);
     if (task_created != pdPASS) { ESP_LOGE(TAG, "Failed to create TFT task! Halting."); /* Cleanup... */ return; }
+
+    xTaskCreate(inactivity_monitor_task, "inactivity_monitor", 2048, NULL, 3, NULL);
 
 #if SIMULATE_REED_INPUT == 1
     task_created = xTaskCreate(reed_simulation_task, "reed_sim_task", 2048,
@@ -828,4 +927,10 @@ extern "C" void app_main(void)
 
     ESP_LOGI(TAG, "Initialization complete. Tasks are running.");
     vTaskDelay(pdMS_TO_TICKS(100));
+}
+
+void loop() {
+    // A loop() függvény üres, mert a feladatok már futnak a FreeRTOS-ban.
+    // Az alkalmazás működése a létrehozott feladatokon keresztül történik.
+    vTaskDelay(pdMS_TO_TICKS(100)); // Csak hogy ne terheljük túl a CPU-t
 }

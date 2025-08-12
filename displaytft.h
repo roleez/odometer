@@ -7,7 +7,8 @@
 #include <string.h>
 #include <math.h>
 #include <atomic>
-
+#define TOUCH_CS 33
+#include "TFT_eSPI.h"
 #include "config.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
@@ -19,12 +20,11 @@
 #include "freertos/timers.h"
 #include "nvs.h"
 #include "nvs_flash.h"
-#include <LovyanGFX.hpp>
+#include <Arduino.h>
 #include <driver/rtc_io.h>
-
-//#include "Font8x8C64.h"
-
-#define KEP_VALTAS 3000
+#include <stdlib.h>
+#include <stdio.h>
+#include <math.h>
 
 typedef struct {
   double speedKmh;
@@ -45,7 +45,8 @@ typedef enum {
   DISPLAY_STATE_COUNT   // Az állapotok száma a ciklikus váltáshoz
 } DisplayState_t;
 
-static LGFX lcd;
+extern TFT_eSPI lcd;
+extern TFT_eSprite sprite;
 extern uint16_t bootCount;
 extern const char *TAG; // Ha a displaytft.cpp-ben is szükséged van rá
 // Globális adatok és mutex extern deklarációja

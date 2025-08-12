@@ -1,0 +1,64 @@
+#define LGFX_USE_V1 // Fontos a LovyanGFX v1.x API-hoz
+
+#include <stdio.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "esp_sleep.h"
+#include "esp_log.h"
+#include "driver/gpio.h"
+#include "driver/rtc_io.h" // RTC GPIO funkciókhoz
+#include <LovyanGFX.hpp>
+
+static LGFX tft; // Létrehozzuk a tft objektumot
+
+static const char *TAG = "DEEP_SLEEP_APP";
+
+// RTC_DATA_ATTR attribútummal jelölt változók túlélik a mélyalvást
+RTC_DATA_ATTR int boot_count = 0;
+
+// GPIO0 a BOOT gomb, ami egyben EXT0 ébresztő forrás is lehet
+#define BUTTON_GPIO GPIO_NUM_0
+// Az időtartam, amíg az eszköz ébren marad minden ébredés után, mielőtt újra mélyalvásba lép
+#define ACTIVE_TIME_BEFORE_SLEEP_SEC 60 // 1 perc
+
+extern "C" void app_main(void)
+{
+    // Az ESP32 mélyalvásból való ébredéskor újraindul,
+    // így ez a függvény minden alkalommal lefut.
+    boot_count++;
+    ESP_LOGI(TAG, "Ébredés sorszáma: %d", boot_count);
+
+    // Kijelző inicializálása
+    tft.init();
+    tft.setRotation(3); // Fekvő mód (Landscape). Próbáld ki 1 vagy 3.
+    tft.setBrightness(228);
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+    tft.setTextDatum(MC_DATUM); // Szöveg igazítása középre
+    tft.setTextSize(3); // Nagyobb betűméret
+
+    char display_buf[50];
+    snprintf(display_buf, sizeof(display_buf), "Ebredes: %d", boot_count);
+    tft.drawString(display_buf, tft.width() / 2, tft.height() / 2);
+
+    ESP_LOGI(TAG, "Kijelzőn: %s", display_buf);
+
+    // Ébresztés konfigurálása GPIO0-ra (gombnyomásra)
+    ESP_LOGI(TAG, "GPIO %d konfigurálása ébresztőként (negatív logika)", BUTTON_GPIO);
+    
+    rtc_gpio_deinit(BUTTON_GPIO);
+    rtc_gpio_pullup_en(BUTTON_GPIO);
+    rtc_gpio_pulldown_dis(BUTTON_GPIO);
+    esp_sleep_enable_ext0_wakeup(BUTTON_GPIO, 0); // 0 = LOW level trigger
+
+    // Az eszköz aktív marad az alábbi ideig, majd mélyalvásba lép.
+    // Ez minden ébredés után (első indítás és gombnyomásos ébredés is) megismétlődik.
+    ESP_LOGI(TAG, "Eszköz aktív. %d másodperc múlva mélyalvásba lép...", ACTIVE_TIME_BEFORE_SLEEP_SEC);
+    
+    vTaskDelay(pdMS_TO_TICKS(ACTIVE_TIME_BEFORE_SLEEP_SEC * 1000));
+
+    ESP_LOGI(TAG, "Mélyalvás indítása...");
+    // A program innen nem tér vissza. 
+    // A következő ébredéskor az app_main() újraindul a legelejéről.
+    esp_deep_sleep_start(); 
+}
