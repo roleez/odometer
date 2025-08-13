@@ -78,10 +78,10 @@ static TimerHandle_t wifiOffTimer = NULL;
 // visszahívás 10 perc múlva
 void wifiOffTimerCallback(TimerHandle_t xTimer) {
     ESP_LOGI(TAG, "Disabling WiFi to save power");
-    if (WiFi.isConnected()) {
-        WiFi.disconnect(true);
+    //if (WiFi.isConnected()) {
+        //WiFi.disconnect(true);
         WiFi.mode(WIFI_OFF);
-    }
+    //}
 }
 
 // --- ISR (Interrupt Service Routine - REED) ---
@@ -810,21 +810,28 @@ void setup()
             }
 
           // WiFi és OTA csak cold-bootkor
-          WiFi.mode(WIFI_STA);
-          WiFi.begin(WIFI_SSID, WIFI_PASS);
-          ESP_LOGI(TAG, "Connecting WiFi SSID: %s", WIFI_SSID);
+          WiFi.mode(WIFI_AP);
+          if (WiFi.softAP(WIFI_SSID, WIFI_PASS, 6)) {
+            ESP_LOGI(TAG,
+                     "WiFi AP started successfully on channel 6 with SSID: %s",
+                     WIFI_SSID);
+          } else {
+            ESP_LOGE(TAG, "WiFi AP Failed to start!");
+          }
+          ESP_LOGI(TAG, "WiFi AP starting with SSID: %s", WIFI_SSID);
           uint16_t wifiRetryCount = 0;
-          while (WiFi.status() != WL_CONNECTED && wifiRetryCount < WIFI_CONNECT_MAX_RETRIES) {
+/*          while (WiFi.status() != WL_CONNECTED && wifiRetryCount < WIFI_CONNECT_MAX_RETRIES) {
               ESP_LOGI(TAG, "WiFi connecting... Attempt %d/%d", wifiRetryCount + 1, WIFI_CONNECT_MAX_RETRIES);
               vTaskDelay(pdMS_TO_TICKS(1000));
               wifiRetryCount++;
-          }
+          }*/
 
-          ESP_LOGI(TAG, "WiFi connected, IP: %s", WiFi.localIP().toString().c_str());
-          if (WiFi.status() == WL_CONNECTED) { 
+          //if (WiFi.status() == WL_CONNECTED) ESP_LOGI(TAG, "WiFi connected, IP: %s", WiFi.localIP().toString().c_str()); else ESP_LOGI(TAG, "WiFi connection failed after %d attempts.", wifiRetryCount);
+          ESP_LOGI(TAG, "WiFi AP IP: %s", WiFi.softAPIP().toString().c_str());
+          //if (WiFi.status() == WL_CONNECTED) { 
             ArduinoOTA.begin();
             ESP_LOGI(TAG, "OTA Ready");
-          }
+          //}
 
           // egyszer futó timer 10 perc múlva WiFi lekapcsoláshoz
           wifiOffTimer = xTimerCreate(

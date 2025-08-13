@@ -33,15 +33,15 @@
 #define KEPVALT 0
 
 // --- Szimulációs Konfiguráció ---
-#define SIMULATE_REED_INPUT 1        // 1 = Szimuláció aktív, 0 = Szimuláció inaktív
+#define SIMULATE_REED_INPUT 0        // 1 = Szimuláció aktív, 0 = Szimuláció inaktív
 #define SIMULATED_SPEED_KMH 9.8     // Szimulált sebesség km/h-ban
 #define SIMULATION_DURATION_MINUTES 3 // Szimuláció időtartama percben (csak szimulációhoz)
 
 #define SET_INITIAL_ODOMETER 0 // 1 = Kilométeróra beállítása, 0 = Nincs beállítás
 
 // hozzáadva: WiFi beállítások
-#define WIFI_SSID "gentoom"
-#define WIFI_PASS "3ny3ml3sz3ll0v@csk@?"
+#define WIFI_SSID "ODOMETER" // WiFi SSID (Hozzáférési pont neve)
+#define WIFI_PASS "12345678!" // WiFi jelszó (Hozzáférési pont jelszava, minimum 8 karakter)
 #define WIFI_CONNECT_MAX_RETRIES 10 // Maximum újracsatlakozási kísérletek száma
 
 #if SET_INITIAL_ODOMETER == 1
