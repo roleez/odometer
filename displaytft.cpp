@@ -20,6 +20,11 @@ TFT_eSprite sprite = TFT_eSprite(&lcd);
 
 // Timer callback függvény - automatikus kijelző váltáshoz
 void displayTimerCallback(TimerHandle_t xTimer) {
+
+  if (keptoggle) {
+    return;
+  }
+  
   // Csak akkor váltunk automatikusan, ha nem volt manuális váltás
   if (!manualDisplayChange) {
     // Kijelző állapot váltása
@@ -290,7 +295,7 @@ void guiTask(void *pvParameters)
         break;
       case DISPLAY_DAILY_DISTANCE:
         if (fabs(localSensorData.dailyDistanceKm - 
-                 prevSensorData.dailyDistanceKm) > 0.0001)
+                 prevSensorData.dailyDistanceKm) > 0.01)
           data_changed = true;
         if (localSensorData.speedKmh > maxSpeedKmh) {
           maxSpeedKmh = localSensorData.speedKmh;
@@ -438,7 +443,7 @@ void guiTask(void *pvParameters)
       sprite.setTextColor(TFT_WHITE, TFT_BLUE);
       sprite.setTextSize(3);
       sprite.setFreeFont(&FreeMonoBold12pt7b);
-      sprite.drawString(display_buffer, sprite.width() / 2, sprite.height() / 2 - 20);
+      sprite.drawString(display_buffer, sprite.width() / 2, sprite.height() / 2 - 27);
       sprite.setFreeFont(&FreeSerif9pt7b);
 
       // Ellenőrizzük, hogy "km "-rel kezdődik-e
@@ -449,7 +454,7 @@ void guiTask(void *pvParameters)
         me_str_x_pos = sprite.width() / 2 + 8; // Eredeti pozíció
       }
 
-      sprite.drawString(me_str, me_str_x_pos, sprite.height() / 2 + 40);
+      sprite.drawString(me_str, me_str_x_pos, sprite.height() / 2 + 33);
       sprite.setTextSize(2);
       sprite.setFreeFont(nullptr);
       sprite.setTextColor(TFT_LIGHTGREY, TFT_BLUE);

@@ -58,6 +58,9 @@ Indulástól 3 másodpercenként vátozik a kijelzett adat, ami GPIO35 nyomógom
 10. **Szimulációs mód**:
     - Fordítás előtt aktiválható (`config.h`: `SIMULATE_REED_INPUT 1`)
     - Szimulált sebesség: 14.5 km/h, időtartam: 3 perc.
+11. **Képernyő fixálás**:
+    Az ébresztő gomb működés közbeni megnyomása azt eredményezi, hogy
+    az éppen kijelzett képernyő a következő gomb megnyomásig marad.
 
 ---
 
