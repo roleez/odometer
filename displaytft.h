@@ -63,6 +63,8 @@ extern double averageSpeedKmh;
 extern double startTotalDistanceKm;
 extern int64_t totalMovingTimeUs;
 
+extern volatile bool keptoggle;
+
 void guiTask(void *pvParameters); // Csak a deklaráció
 
 #endif

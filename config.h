@@ -29,12 +29,12 @@
 #define RESET_BUTTON_POLL_INTERVAL_MS 50  // Napi nullázó gomb figyelési gyakorisága
 
 // Kijelző váltási intervallum (már nem használt, de a kompatibilitás miatt megtartva)
-#define KEP_VALTAS 6000  // 3 másodperc milliszekundumban
+#define KEP_VALTAS 3500  // 3 másodperc milliszekundumban
 #define KEPVALT 0
 
 // --- Szimulációs Konfiguráció ---
-#define SIMULATE_REED_INPUT 0        // 1 = Szimuláció aktív, 0 = Szimuláció inaktív
-#define SIMULATED_SPEED_KMH 9.8     // Szimulált sebesség km/h-ban
+#define SIMULATE_REED_INPUT 1        // 1 = Szimuláció aktív, 0 = Szimuláció inaktív
+#define SIMULATED_SPEED_KMH 8.8     // Szimulált sebesség km/h-ban
 #define SIMULATION_DURATION_MINUTES 3 // Szimuláció időtartama percben (csak szimulációhoz)
 
 #define SET_INITIAL_ODOMETER 0 // 1 = Kilométeróra beállítása, 0 = Nincs beállítás

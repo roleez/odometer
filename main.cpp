@@ -45,6 +45,8 @@ double startTotalDistanceKm = 0.0;  // Eltávolítottuk a static kulcsszót
 int64_t totalMovingTimeUs = 0;  // Eltávolítottuk a static kulcsszót
 double averageSpeedKmh = 0.0;  // Eltávolítottuk a static kulcsszót
 extern bool data_changed; // Ez a változó jelzi, hogy az adatok frissültek-e
+bool kepfix = false, oldkepfix = false;
+volatile bool keptoggle = false;
 
 // --- NVS Globálisok ---
 #define NVS_NAMESPACE "storage"
@@ -922,7 +924,7 @@ void setup()
     xTaskCreate(inactivity_monitor_task, "inactivity_monitor", 2048, NULL, 3, NULL);
 
 #if SIMULATE_REED_INPUT == 1
-    task_created = xTaskCreate(reed_simulation_task, "reed_sim_task", 2048,
+    task_created = xTaskCreate(reed_simulation_task, "reed_sim_task", 4096,
                                NULL, 4, NULL);
     if (task_created != pdPASS) {
       ESP_LOGE(TAG, "Failed to create REED simulation task! Halting.");
@@ -937,7 +939,11 @@ void setup()
 }
 
 void loop() {
-    // A loop() függvény üres, mert a feladatok már futnak a FreeRTOS-ban.
-    // Az alkalmazás működése a létrehozott feladatokon keresztül történik.
+    kepfix = digitalRead(BUTTON_PIN);
+    if (kepfix == LOW && oldkepfix == HIGH) {
+        keptoggle = !keptoggle;
+        ESP_LOGD(TAG, "Button state changed: %d", keptoggle);
+    }
+    oldkepfix = kepfix;
     vTaskDelay(pdMS_TO_TICKS(100)); // Csak hogy ne terheljük túl a CPU-t
 }
