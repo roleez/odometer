@@ -60,7 +60,7 @@ Indulástól 3 másodpercenként vátozik a kijelzett adat, ami GPIO35 nyomógom
     - Szimulált sebesség: 14.5 km/h, időtartam: 3 perc.
 11. **Képernyő fixálás**:
     Az ébresztő gomb működés közbeni megnyomása azt eredményezi, hogy
-    az éppen kijelzett képernyő a következő gomb megnyomásig marad.
+    az éppen kijelzett képernyő a gomb a következő megnyomásig marad.
 
 ---
 
